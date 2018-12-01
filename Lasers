@@ -1,0 +1,630 @@
+//
+//  Lasers.cp
+//
+//
+//  Created by Tanzim Pathan on 2018-11-28.
+//
+
+#include "gpiolib_addr.h"
+#include "gpiolib_reg.h"
+
+#include <stdint.h>
+#include <stdio.h>        //for the printf() function
+#include <fcntl.h>
+#include <linux/watchdog.h>     //needed for the watchdog specific constants
+#include <unistd.h>         //needed for sleep
+#include <sys/ioctl.h>         //needed for the ioctl function
+#include <stdlib.h>         //for atoi
+#include <time.h>         //for time_t and the time() function
+#include <sys/time.h>           //for gettimeofday()
+
+
+#define LASER1_PIN_NUM 4 //This will replace LASER1_PIN_NUM with 4 when compiled
+#define LASER2_PIN_NUM 17 //This will replace LASER2_PIN_NUM with 17 when compiled
+
+#define PRINT_MSG(file, time, programName, str) \
+do{ \
+fprintf(logFile, "%s : %s : %s", time, programName, str); \
+fflush(logFile); \
+}while(0)
+
+#define PRINT_MSG1(file, time, programName, str, int1) \
+do{ \
+fprintf(dataFile, "%s : %s : %s : %d\n", time, programName, str, int1); \
+fflush(dataFile); \
+}while(0)
+
+//HARDWARE DEPENDENT CODE BELOW
+#ifndef MARMOSET_TESTING
+
+
+GPIO_Handle initializeGPIO()
+{
+    GPIO_Handle gpio;
+    gpio = gpiolib_init_gpio();
+    if(gpio == NULL)
+    {
+        perror("Could not initialize GPIO");
+    }
+    return gpio;
+}
+
+
+int laserDiodeStatus(GPIO_Handle gpio, int diodeNumber)
+{
+    if(gpio == NULL)
+    {
+        return -1;
+    }
+    
+    if(diodeNumber == 1)
+    {
+        uint32_t level_reg1 = gpiolib_read_reg(gpio, GPLEV(0));
+        
+        if(level_reg1 & (1 << LASER1_PIN_NUM))
+        {
+            return 1;
+        }
+        else
+        {
+            return 0;
+        }
+    }
+    
+    if(diodeNumber == 2)
+    {
+        uint32_t level_reg2 = gpiolib_read_reg(gpio, GPLEV(0));
+        
+        if(level_reg2 & (1 << LASER2_PIN_NUM))
+        {
+            return 1;
+        }
+        else
+        {
+            return 0;
+        }
+    }
+    
+    
+    else
+    {
+        return -1;
+    }
+    
+    
+}
+
+#endif
+//END OF HARDWARE DEPENDENT CODE
+
+void outputMessage(int laser1Count, int laser2Count, int numberIn, int numberOut)
+{
+    printf("Laser 1 was broken %d times \n", laser1Count);
+    printf("Laser 2 was broken %d times \n", laser2Count);
+    printf("%d objects entered the room \n", numberIn);
+    printf("%d objects exited the room \n", numberOut);
+}
+
+void getTime(char* buffer)
+{
+    //Create a timeval struct named tv
+    struct timeval tv;
+    
+    //Create a time_t variable named curtime
+    time_t curtime;
+    
+    
+    //Get the current time and store it in the tv struct
+    gettimeofday(&tv, NULL);
+    
+    //Set curtime to be equal to the number of seconds in tv
+    curtime=tv.tv_sec;
+    
+    //This will set buffer to be equal to a string that in
+    //equivalent to the current date, in a month, day, year and
+    //the current time in 24 hour notation.
+    strftime(buffer,30,"%m-%d-%Y  %T.",localtime(&curtime));
+    
+}
+
+void errorMessage(const int errorCode)
+{
+    fprintf(stderr, "An error occured; the error code was %d \n", errorCode);
+}
+
+
+void readConfig(FILE* configFile, int* timeout, char* logFileName, char*  dataFileName)
+{
+    //Loop counter
+    int i = 0;
+    
+    //A char array to act as a buffer for the file
+    char buffer[255];
+    
+    //The value of the timeout variable is set to zero at the start
+    *timeout = 0;
+    
+    //The value of the numBlinks variable is set to zero at the start
+    laser1Count = 0;
+    laser2Count = 0;
+    numberIn = 0;
+    numberOut=0;
+    
+    //This is a variable used to track which input we are currently looking
+    //for (timeout, logFileName or numBlinks)
+    //int input = 0;
+    
+    //This will
+    //fgets(buffer, 255, configFile);
+    //This will check that the file can still be read from and if it can,
+    //then the loop will check to see if the line may have any useful
+    //information.
+    enum State { START, WATCHDOGTIMEOUT, LOGFILE, DATAFILE};
+    
+    enum State s = START;
+    
+    while(fgets(buffer, 255, configFile) != NULL)
+    {
+        i = 0;
+        //If the starting character of the string is a '#',
+        //then we can ignore that line
+        switch (s)
+        {
+
+            case START:
+                if(buffer[i] != '#')
+                {
+                    while(buffer[i] != 0)
+                    {
+                        //This if will check the value of timeout
+                        if(buffer[i] == '=' && buffer[i-16] == 'W') //WATCHDOG_TIMEOUT=
+                        {
+                            s=WATCHDOGTIMEOUT;
+                            
+                            
+                        }
+                        else if(buffer[i] == '=' && buffer[i-7] == 'L') //LOGFILE=
+                        {
+                            s=LOGFILE;
+                            
+                            
+                        }
+                        else if(buffer[i] == '=' && buffer[i-8] == 'D') //DATAFILE=
+                        {
+                            s=DATAFILE;
+                            
+                            
+                        }
+                        else
+                        {
+                            i++;
+                        }
+                    }
+                    break;
+                
+            case WATCHDOGTIMEOUT:
+                //The loop runs while the character is not null
+                while(buffer[i] != 0)
+                {
+                    //If the character is a number from 0 to 9
+                    if(buffer[i] >= '0' && buffer[i] <= '9')
+                    {
+                        //Move the previous digits up one position and add the
+                        //new digit
+                        *timeout = (*timeout *10) + (buffer[i] - '0');
+                    }
+                    i++;
+                }
+                s=START;
+                break;
+                
+            case LOGFILE:
+                int j = 0;
+                //Loop runs while the character is not a newline or null
+                while(buffer[i] != 0  && buffer[i] != '\n')
+                {
+                    //If the characters after the equal sign are not spaces or
+                    //equal signs, then it will add that character to the string
+                    if(buffer[i] != ' ' && buffer[i] != '=')
+                    {
+                        logFileName[j] = buffer[i];
+                        j++;
+                    }
+                    i++;
+                }
+                //Add a null terminator at the end
+                logFileName[j] = 0;
+                s=START;
+                break;
+                
+            case DATAFILE:
+                int j = 0;
+                //Loop runs while the character is not a newline or null
+                while(buffer[i] != 0  && buffer[i] != '\n')
+                {
+                    //If the characters after the equal sign are not spaces or
+                    //equal signs, then it will add that character to the string
+                    if(buffer[i] != ' ' && buffer[i] != '=')
+                    {
+                        dataFileName[j] = buffer[i];
+                        j++;
+                    }
+                    i++;
+                }
+                //Add a null terminator at the end
+                dataFileName[j] = 0;
+                s=START;
+                break;
+            }
+            
+        }
+    }
+}
+
+
+
+
+
+int objectCount(time_t startTime, FILE* logFile, FILE* dataFile, char* programName, int watchdog, char* time1){
+    enum State { START, BOTH_ON, L1_OFF, BOTH_OFF, L2_OFF, DONE };
+    
+    enum State s = START;
+    GPIO_Handle gpio = initializeGPIO();
+    
+    
+    int numberIn = 0; //the number of balls that moved into the room
+    int numberOut = 0; //the number of balls that moved out of the room
+    int here = 0; //variable to see if the ball is going in or out of the room
+    int k=0;                    //when here = 0, the ball is outside of the room; when here = 4, the ball is inside the room
+    int laser1Count = 0; //number of times L1 is broken
+    int laser2Count = 0; //number of times L2 is broken
+    
+    int L1 = 0;
+    int L2 = 0;
+    
+    //the state machine will loop through until we reach the end of the time limit set
+    //while (1) {
+    L1 = laserDiodeStatus(gpio, 1); //if L1 = 0, the laser does not reach the photodiode
+    //if L1 = 1, the laser reaches the photodiode
+    L2 = laserDiodeStatus(gpio, 2); //if L2 = 0, the laser does not reach the photodiode
+    //if L2 = 1, the laser reaches the photodiode
+    
+    printf("%d  ",L1);
+    printf("%d  \n", L2);
+    
+    usleep(10000);
+    while (1)
+    {
+        switch (s)
+        {
+            case START:
+                numberIn = 0; //initialize the number of objects that have moved in
+                numberOut = 0; //initialize the number of objects that have moved out
+                
+                if (L1 == 1 && L2 == 1) //both lasers reach the photodiodes, so no objects are in the doorway)
+                {
+                    s = BOTH_ON;
+                }
+                
+                break;
+                
+                //both lasers are turned on
+            case BOTH_ON:
+                
+                //printf("In BOTH ON \n ");
+                //printf("Here (should be 4 or -4): %d \n ", here);
+                
+                if (here == 4) {
+                    //here = 0;
+                    //printf("Number in %d \n ",numberIn);
+                }
+                
+                if (here == -4) {
+                    //here = 0;
+                    //printf("Number out %d \n ",numberOut);
+                }
+                if (L1 == 0 && L2 == 1)
+                {
+                    s = L1_OFF; //the L1 laser does not reach the photodiode, but the the L2 laser reaches the photodiode so an object is halfway in
+                    //here = 1;
+                    k++;
+                    //here = 0;
+                    //here++; //the ball is moving into the room
+                    laser1Count++; //the L1 laser has been broken
+                }
+                
+                if (L1 == 1 &&  L2 == 0)
+                {
+                    s = L2_OFF; //the L1 laser reaches the photodiode, but the the L2 laser does not reach the photodiode so an object is halfway out
+                    here++;
+                    //here = 0;
+                    //here--; //the ball is moving out of the room
+                    laser2Count++; //the L2 laser has been broken
+                }
+                
+                /*else if ((time(NULL) - startTime) == timeLimit) //if we reach the time limit, the loop is done
+                 {
+                 s = DONE;
+                 }
+                 */
+                
+                break;
+                
+                //the L1 laser is turned off
+            case L1_OFF:
+                
+                //printf("In L1 OFF \n ");
+                //printf("Here (should be 1 or -3): %d \n ", here);
+                
+                if (L1 == 0 && L2 == 0)
+                {
+                    s = BOTH_OFF; //both lasers do not reach the photodiode, so the object is in the doorway
+                    here++;
+                    k++;
+                    //laser1Count++;
+                    laser2Count++;
+                }
+                
+                if (L1 == 1 && L2 == 1)
+                {
+                    here--;
+                    k--;
+                    if (laser1Count <= laser2Count && here==0)
+                    {
+                        numberIn++;
+                    }
+                    if (laser1Count <= laser2Count && k!=0 && here!=0)
+                    {
+                        numberOut++; //the ball has gone out of the room
+                    }
+                    s = BOTH_ON; //both lasers reach the photodiode, so no objects are in the doorway
+                    
+                    
+                }
+               
+                
+                break;
+                
+                //both lasers are turned off
+            case BOTH_OFF:
+                
+                
+                //printf("In BOTH OFF \n ");
+                //printf("Here (should be 2 or -2): %d \n ", here);
+                
+                if (L1 == 1 && L2 == 0)
+                {
+                    s = L2_OFF; //the L1 laser reaches the photodiode, but the the L2 laser does not reach the photodiode so an object is halfway out
+                    here--;
+                    k++;
+                    //laser2Count++;
+                }
+                
+                if (L1 == 0 && L2 == 1)
+                {
+                    s = L1_OFF; //the L1 laser does not reach the photodiode, but the the L2 laser reaches the photodiode so an object is halfway in
+                    here--;
+                    k--;
+                    //laser1Count++;
+                }
+                
+                /*else if ((time(NULL) - startTime) == timeLimit) //if we reach the time limit, the loop is done
+                 {
+                 s = DONE;
+                 }
+                 */
+                
+                break;
+                
+                //the L2 laser is turned off
+            case L2_OFF:
+                
+                //printf("In L2_OFF \n ");
+                //printf("Here (should be 3 or -1): %d \n ", here);
+                
+                if (L1 == 0 && L2 == 0)
+                {
+                    s = BOTH_OFF; //both lasers do not reach the photodiode, so the object is in the doorway
+                    here++;
+                    laser1Count++;
+                    //laser2Count++;
+                }
+                
+                if (L1 == 1 && L2 == 1)
+                {
+                    here--;
+                    k++;
+                    if (laser1Count >= laser2Count && here==4)
+                    {
+                        numberIn++; //the ball has gone into the room
+                        s = BOTH_ON; //both lasers reach the photodiode, so no objects are in the doorway
+                        //here++;
+                    }
+                    if (laser1Count >= laser2Count && k==4 && here!=0)
+                    {
+                        numberOut++; //the ball has gone into the room
+                        s = BOTH_ON; //both lasers reach the photodiode, so no objects are in the doorway
+                        //here++;
+                    }
+                    
+                    else
+                    {
+                        s = BOTH_ON; //both lasers reach the photodiode, so no objects are in the doorway
+                        //here++;
+                    }
+                    
+                }
+                if (L1 == 0 && L2 ==1)
+                {
+                    s= L1_OFF;
+                }
+                /*else if ((time(NULL) - startTime) == timeLimit) //if we reach the time limit, the loop is done
+                 {
+                 s = DONE;
+                 }
+                 */
+                
+                
+                break;
+                
+            case DONE:
+                //Free the GPIO now that the program is over.
+                gpiolib_free_gpio(gpio);
+                break;
+                
+                
+        }
+        
+        outputMessage(laser1Count, laser2Count, numberIn, numberOut);
+        ioctl(watchdog, WDIOC_KEEPALIVE, 0);
+        getTime(time1);
+        //Log that the Watchdog was kicked
+        PRINT_MSG(logFile, time1, programName, "The Watchdog was kicked\n\n");
+        
+        if(time(NULL) - startTime >= 20)
+        {
+            getTime(time1);
+            PRINT_MSG1(dataFile, time1, programName, "Laser 1: %d", laser1Count);
+            PRINT_MSG1(dataFile, time1, programName, "Laser 2: %d", laser2Count);
+            PRINT_MSG1(dataFile, time1, programName, "Number In: %d", numberIn);
+            PRINT_MSG1(dataFile, time1, programName, "Number Out: %d", numberOut);
+            startTime=time(NULL);
+        }
+        
+        
+        
+        
+        
+    }
+    return 0;
+}
+
+#ifndef MARMOSET_TESTING
+
+int main(const int argc, const char* const argv[])
+{
+    //Create a string that contains the program name
+    const char* argName = argv[0];
+    
+    //These variables will be used to count how long the name of the program is
+    int i = 0;
+    int namelength = 0;
+    
+    while(argName[i] != 0)
+    {
+        namelength++;
+        i++;
+    }
+    
+    char programName[namelength];
+    
+    i = 0;
+    
+    //Copy the name of the program without the ./ at the start
+    //of argv[0]
+    while(argName[i + 2] != 0)
+    {
+        programName[i] = argName[i + 2];
+        i++;
+    }
+    
+    //Create a file pointer named configFile
+    FILE* configFile;
+    //Set configFile to point to the Lab4Sample.cfg file. It is
+    //set to read the file.
+    configFile = fopen("/home/pi/lasers8.cfg", "r");
+    
+    if(!configFile)
+    {
+        perror("The config file could not be opened");
+        return -1;
+    }
+    
+    int timeout;
+    char logFileName[50];
+    char dataFileName[50];
+    
+    
+    
+    //Call the readConfig function to read from the config file
+    readConfig(configFile, &timeout, logFileName, dataFileName);
+    
+    //Close the configFile now that we have finished reading from it
+    fclose(configFile);
+    
+    //Create a new file pointer to point to the log file
+    FILE* logFile;
+    
+    //Set it to point to the file from the config file and make it append to
+    //the file when it writes to it.
+    logFile = fopen(logFileName, "a");
+    
+    //Check that the file opens properly.
+    if(!logFile)
+    {
+        perror("The log file could not be opened");
+        return -1;
+    }
+    FILE* dataFile;
+    dataFile  =  fopen(dataFileName,"a");
+    
+    if(!dataFile)
+    {
+        perror("The data file could not be opened");
+        return -1;
+    }
+    //Create a char array that will be used to hold the time values
+    char time1[30];
+    getTime(time1);
+    
+    /*Initialize the GPIO pins
+     GPIO_Handle gpio = initializeGPIO();
+     //Get the current time
+     getTime(time);
+     //Log that the GPIO pins have been initialized
+     PRINT_MSG(logFile, time, programName, "The GPIO pins have been initialized\n\n");*/
+    
+    int watchdog;
+    
+    if ((watchdog = open("/dev/watchdog", O_RDWR | O_NOCTTY)) < 0) {
+        printf("Error: Couldn't open watchdog device! %d\n", watchdog);
+        return -1;
+    }
+    //Get the current time
+    getTime(time1);
+    //Log that the watchdog file has been opened
+    PRINT_MSG(logFile, time, programName, "The Watchdog file has been opened\n\n");
+    
+    
+    ioctl(watchdog, WDIOC_SETTIMEOUT, &timeout);
+    
+    //Get the current time
+    getTime(time1);
+    //Log that the Watchdog time limit has been set
+    PRINT_MSG(logFile, time, programName, "The Watchdog time limit has been set\n\n");
+    
+    ioctl(watchdog, WDIOC_GETTIMEOUT, &timeout);
+    
+    printf("The watchdog timeout is %d seconds.\n\n", timeout);
+    
+    time_t startTime = time(NULL);
+    objectCount(startTime, logFile, dataFile, programName, watchdog, time1);
+    
+    
+    //Writing a V to the watchdog file will disable to watchdog and prevent it from
+    //resetting the system
+    write(watchdog, "V", 1);
+    getTime(time1);
+    //Log that the Watchdog was disabled
+    PRINT_MSG(logFile, time, programName, "The Watchdog was disabled\n\n");
+    
+    //Close the watchdog file so that it is not accidentally tampered with
+    close(watchdog);
+    getTime(time1);
+    //Log that the Watchdog was closed
+    PRINT_MSG(logFile, time, programName, "The Watchdog was closed\n\n");
+    
+    return 0;
+}
+
+#endif
